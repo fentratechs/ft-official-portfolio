@@ -1,21 +1,134 @@
-import {signToken,cookieHeader,jsonError,checkOrigin,readJson} from './_auth.js';
-const enc=new TextEncoder();
-async function hashPassword(password,salt){const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc.encode(salt),iterations:210000,hash:'SHA-256'},key,256);return [...new Uint8Array(bits)].map(x=>x.toString(16).padStart(2,'0')).join('')}
-export async function onRequestPost({request,env}) {
-  if(!checkOrigin(request))return jsonError('Invalid request origin.',403);
-  if(!env.DB||!env.ADMIN_EMAIL||!env.ADMIN_PASSWORD_HASH||!env.ADMIN_PASSWORD_SALT||!env.SESSION_SECRET)return jsonError('Admin secrets are not configured.',503);
-  const ip=request.headers.get('CF-Connecting-IP')||'unknown';
-  const ipHash=await hashPassword(ip,env.SESSION_SECRET);
-  const now=Math.floor(Date.now()/1000);
-  await env.DB.prepare('DELETE FROM login_attempts WHERE attempted_at < ?').bind(now-3600).run();
-  const attempts=await env.DB.prepare('SELECT COUNT(*) AS n FROM login_attempts WHERE ip_hash=? AND attempted_at>?').bind(ipHash,now-900).first();
-  if((attempts?.n||0)>=8)return jsonError('Too many attempts. Try again in 15 minutes.',429);
-  let body;try{body=await readJson(request)}catch{return jsonError('Invalid request.')}
-  await env.DB.prepare('INSERT INTO login_attempts(ip_hash,attempted_at) VALUES(?,?)').bind(ipHash,now).run();
-  const email=String(body.email||'').toLowerCase().trim();
-  const pass=String(body.password||'');
-  const actual=await hashPassword(pass,env.ADMIN_PASSWORD_SALT);
-  if(email!==env.ADMIN_EMAIL.toLowerCase()||actual!==env.ADMIN_PASSWORD_HASH)return jsonError('Email or password is incorrect.',401);
-  const token=await signToken(env,{sub:email,exp:Date.now()+8*60*60*1000});
-  return new Response(JSON.stringify({ok:true}),{headers:{'Content-Type':'application/json','Set-Cookie':cookieHeader(token,8*60*60)}});
+
+import {
+  signToken,
+  cookieHeader,
+  jsonError,
+  checkOrigin,
+  readJson
+} from './_auth.js';
+
+const enc = new TextEncoder();
+
+async function hashPassword(password, salt) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
+  );
+
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: enc.encode(salt),
+      iterations: 210000,
+      hash: 'SHA-256'
+    },
+    key,
+    256
+  );
+
+  return [...new Uint8Array(bits)]
+    .map(x => x.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+export async function onRequestPost({ request, env }) {
+  if (!checkOrigin(request)) {
+    return jsonError('Invalid request origin.', 403);
+  }
+
+  // Check required configuration without exposing secret values
+  const required = [
+    'DB',
+    'ADMIN_EMAIL',
+    'ADMIN_PASSWORD_HASH',
+    'ADMIN_PASSWORD_SALT',
+    'SESSION_SECRET'
+  ];
+
+  const missing = required.filter(key => {
+    if (key === 'DB') return !env.DB;
+    return typeof env[key] !== 'string' || env[key].length === 0;
+  });
+
+  if (missing.length > 0) {
+    return jsonError(
+      'Missing configuration: ' + missing.join(', '),
+      503
+    );
+  }
+
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+
+  const ipHash = await hashPassword(
+    ip,
+    env.SESSION_SECRET
+  );
+
+  const now = Math.floor(Date.now() / 1000);
+
+  await env.DB.prepare(
+    'DELETE FROM login_attempts WHERE attempted_at < ?'
+  ).bind(now - 3600).run();
+
+  const attempts = await env.DB.prepare(
+    'SELECT COUNT(*) AS n FROM login_attempts WHERE ip_hash=? AND attempted_at>?'
+  ).bind(ipHash, now - 900).first();
+
+  if ((attempts?.n || 0) >= 8) {
+    return jsonError(
+      'Too many attempts. Try again in 15 minutes.',
+      429
+    );
+  }
+
+  let body;
+
+  try {
+    body = await readJson(request);
+  } catch {
+    return jsonError('Invalid request.', 400);
+  }
+
+  await env.DB.prepare(
+    'INSERT INTO login_attempts(ip_hash,attempted_at) VALUES(?,?)'
+  ).bind(ipHash, now).run();
+
+  const email = String(body.email || '')
+    .toLowerCase()
+    .trim();
+
+  const pass = String(body.password || '');
+
+  const actual = await hashPassword(
+    pass,
+    env.ADMIN_PASSWORD_SALT
+  );
+
+  if (
+    email !== env.ADMIN_EMAIL.toLowerCase().trim() ||
+    actual !== env.ADMIN_PASSWORD_HASH.trim()
+  ) {
+    return jsonError(
+      'Email or password is incorrect.',
+      401
+    );
+  }
+
+  const token = await signToken(env, {
+    sub: email,
+    exp: Date.now() + 8 * 60 * 60 * 1000
+  });
+
+  return new Response(
+    JSON.stringify({ ok: true }),
+    {
+      headers: {
+        'Content-Type': 'application/json',
+        'Set-Cookie': cookieHeader(token, 8 * 60 * 60)
+      }
+    }
+  );
 }
