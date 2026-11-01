@@ -1,0 +1,1 @@
+(async()=>{document.querySelector('#year').textContent=new Date().getFullYear();try{let r=await fetch('/api/public');let d=await r.json();document.querySelector('#bio').textContent=d.profile?.biography||'';document.querySelector('#vision').textContent=d.profile?.vision||''}catch{document.querySelector('#bio').textContent='Biography is temporarily unavailable.'}})();

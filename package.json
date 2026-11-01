@@ -1,0 +1,11 @@
+{
+  "name": "ft-official-portfolio",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fayaz Tumrani official portfolio for Cloudflare Pages and D1",
+  "scripts": {
+    "dev": "wrangler pages dev public",
+    "deploy": "wrangler pages deploy public",
+    "db:init": "wrangler d1 execute ft-portfolio-db --file=./schema.sql --remote"
+  }
+}

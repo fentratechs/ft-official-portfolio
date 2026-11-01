@@ -1,0 +1,2 @@
+import {cookieHeader,checkOrigin,jsonError} from './_auth.js';
+export async function onRequestPost({request}){if(!checkOrigin(request))return jsonError('Invalid request origin.',403);return new Response(JSON.stringify({ok:true}),{headers:{'Content-Type':'application/json','Set-Cookie':cookieHeader('',0)}})}
