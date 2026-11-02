@@ -8,7 +8,8 @@ import {
 
 const enc = new TextEncoder();
 
-async function hashPassword(password, salt) {
+async function hashPassword(password, salt, setStage = () => {}) {
+  setStage('password_import');
   const key = await crypto.subtle.importKey(
     'raw',
     enc.encode(password),
@@ -17,6 +18,7 @@ async function hashPassword(password, salt) {
     ['deriveBits']
   );
 
+  setStage('password_derive');
   const bits = await crypto.subtle.deriveBits(
     {
       name: 'PBKDF2',
@@ -114,7 +116,7 @@ export async function onRequestPost({ request, env }) {
     stage = 'password_hash';
     const email = String(body.email || '').toLowerCase().trim();
     const pass = String(body.password || '');
-    const actual = await hashPassword(pass, env.ADMIN_PASSWORD_SALT);
+    const actual = await hashPassword(pass, env.ADMIN_PASSWORD_SALT, value => { stage = value; });
 
     if (
       email !== env.ADMIN_EMAIL.toLowerCase().trim() ||
