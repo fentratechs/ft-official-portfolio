@@ -1,40 +1,81 @@
-import {signToken,cookieHeader,jsonError,checkOrigin,readJson} from './_auth.js';
+import {
+  signToken,
+  cookieHeader,
+  jsonError,
+  checkOrigin,
+  readJson
+} from './_auth.js';
 
 const enc = new TextEncoder();
 
 async function hashPassword(password, salt) {
   const key = await crypto.subtle.importKey(
-    'raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']
+    'raw',
+    enc.encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits']
   );
-  const bits = await crypto.subtle.deriveBits({
-    name: 'PBKDF2',
-    salt: enc.encode(salt),
-    iterations: 210000,
-    hash: 'SHA-256'
-  }, key, 256);
+
+  const bits = await crypto.subtle.deriveBits(
+    {
+      name: 'PBKDF2',
+      salt: enc.encode(salt),
+      iterations: 210000,
+      hash: 'SHA-256'
+    },
+    key,
+    256
+  );
 
   return [...new Uint8Array(bits)]
-    .map(x => x.toString(16).padStart(2, '0')).join('');
+    .map(x => x.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 async function hashIP(ip, secret) {
   const key = await crypto.subtle.importKey(
-    'raw', enc.encode(secret), {name:'HMAC',hash:'SHA-256'}, false, ['sign']
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
   );
-  const result = await crypto.subtle.sign('HMAC', key, enc.encode(ip));
+
+  const result = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    enc.encode(ip)
+  );
+
   return [...new Uint8Array(result)]
-    .map(x => x.toString(16).padStart(2, '0')).join('');
+    .map(x => x.toString(16).padStart(2, '0'))
+    .join('');
 }
 
-export async function onRequestPost({request, env}) {
-  if (!checkOrigin(request)) return jsonError('Invalid request origin.', 403);
+export async function onRequestPost({ request, env }) {
+  if (!checkOrigin(request)) {
+    return jsonError('Invalid request origin.', 403);
+  }
 
   let stage = 'configuration';
 
   try {
-    if (!env.DB || !env.ADMIN_EMAIL || !env.ADMIN_PASSWORD_HASH ||
-        !env.ADMIN_PASSWORD_SALT || !env.SESSION_SECRET) {
-      return jsonError('Admin secrets are not configured.', 503);
+    const required = [
+      'DB',
+      'ADMIN_EMAIL',
+      'ADMIN_PASSWORD_HASH',
+      'ADMIN_PASSWORD_SALT',
+      'SESSION_SECRET'
+    ];
+
+    const missing = required.filter(key => {
+      if (key === 'DB') return !env.DB;
+      return typeof env[key] !== 'string' || !env[key].length;
+    });
+
+    if (missing.length) {
+      return jsonError('Admin configuration is incomplete.', 503);
     }
 
     stage = 'ip_hash';
@@ -58,10 +99,11 @@ export async function onRequestPost({request, env}) {
 
     stage = 'request_body';
     let body;
+
     try {
       body = await readJson(request);
     } catch {
-      return jsonError('Invalid request.');
+      return jsonError('Invalid request.', 400);
     }
 
     stage = 'record_attempt';
@@ -74,8 +116,10 @@ export async function onRequestPost({request, env}) {
     const pass = String(body.password || '');
     const actual = await hashPassword(pass, env.ADMIN_PASSWORD_SALT);
 
-    if (email !== env.ADMIN_EMAIL.toLowerCase() ||
-        actual !== env.ADMIN_PASSWORD_HASH) {
+    if (
+      email !== env.ADMIN_EMAIL.toLowerCase().trim() ||
+      actual !== env.ADMIN_PASSWORD_HASH.trim()
+    ) {
       return jsonError('Email or password is incorrect.', 401);
     }
 
@@ -85,17 +129,19 @@ export async function onRequestPost({request, env}) {
       exp: Date.now() + 8 * 60 * 60 * 1000
     });
 
-    return new Response(JSON.stringify({ok:true}), {
+    return new Response(JSON.stringify({ ok: true }), {
       headers: {
-        'Content-Type':'application/json',
-        'Set-Cookie':cookieHeader(token, 8 * 60 * 60)
+        'Content-Type': 'application/json',
+        'Set-Cookie': cookieHeader(token, 8 * 60 * 60)
       }
     });
+
   } catch (error) {
     console.error('FT_LOGIN_FAILURE:', stage, error?.name || 'UnknownError');
+
     return Response.json({
       error: 'Login service error.',
       diagnostic: stage
-    }, {status:500});
+    }, { status: 500 });
   }
 }
