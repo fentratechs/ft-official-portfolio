@@ -130,6 +130,7 @@ export async function onRequestPost({ request, env }) {
       error: 'Login service error.',
       diagnostic: stage,
       errorType: error?.name || 'UnknownError',
+      errorMessage: String(error?.message || 'No message'),
     }, { status: 500 });
   }
 }
