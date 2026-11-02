@@ -141,7 +141,8 @@ export async function onRequestPost({ request, env }) {
 
     return Response.json({
       error: 'Login service error.',
-      diagnostic: stage
+      diagnostic: stage,
+      errorType: error?.name || 'UnknownError',
     }, { status: 500 });
   }
 }
