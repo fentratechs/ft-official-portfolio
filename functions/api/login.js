@@ -1,21 +1,101 @@
 import {signToken,cookieHeader,jsonError,checkOrigin,readJson} from './_auth.js';
-const enc=new TextEncoder();
-async function hashPassword(password,salt){const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);const bits=await crypto.subtle.deriveBits({name:'PBKDF2',salt:enc.encode(salt),iterations:210000,hash:'SHA-256'},key,256);return [...new Uint8Array(bits)].map(x=>x.toString(16).padStart(2,'0')).join('')}
-export async function onRequestPost({request,env}) {
-  if(!checkOrigin(request))return jsonError('Invalid request origin.',403);
-  if(!env.DB||!env.ADMIN_EMAIL||!env.ADMIN_PASSWORD_HASH||!env.ADMIN_PASSWORD_SALT||!env.SESSION_SECRET)return jsonError('Admin secrets are not configured.',503);
-  const ip=request.headers.get('CF-Connecting-IP')||'unknown';
-  const ipHash=await hashPassword(ip,env.SESSION_SECRET);
-  const now=Math.floor(Date.now()/1000);
-  await env.DB.prepare('DELETE FROM login_attempts WHERE attempted_at < ?').bind(now-3600).run();
-  const attempts=await env.DB.prepare('SELECT COUNT(*) AS n FROM login_attempts WHERE ip_hash=? AND attempted_at>?').bind(ipHash,now-900).first();
-  if((attempts?.n||0)>=8)return jsonError('Too many attempts. Try again in 15 minutes.',429);
-  let body;try{body=await readJson(request)}catch{return jsonError('Invalid request.')}
-  await env.DB.prepare('INSERT INTO login_attempts(ip_hash,attempted_at) VALUES(?,?)').bind(ipHash,now).run();
-  const email=String(body.email||'').toLowerCase().trim();
-  const pass=String(body.password||'');
-  const actual=await hashPassword(pass,env.ADMIN_PASSWORD_SALT);
-  if(email!==env.ADMIN_EMAIL.toLowerCase()||actual!==env.ADMIN_PASSWORD_HASH)return jsonError('Email or password is incorrect.',401);
-  const token=await signToken(env,{sub:email,exp:Date.now()+8*60*60*1000});
-  return new Response(JSON.stringify({ok:true}),{headers:{'Content-Type':'application/json','Set-Cookie':cookieHeader(token,8*60*60)}});
+
+const enc = new TextEncoder();
+
+async function hashPassword(password, salt) {
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits({
+    name: 'PBKDF2',
+    salt: enc.encode(salt),
+    iterations: 210000,
+    hash: 'SHA-256'
+  }, key, 256);
+
+  return [...new Uint8Array(bits)]
+    .map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+async function hashIP(ip, secret) {
+  const key = await crypto.subtle.importKey(
+    'raw', enc.encode(secret), {name:'HMAC',hash:'SHA-256'}, false, ['sign']
+  );
+  const result = await crypto.subtle.sign('HMAC', key, enc.encode(ip));
+  return [...new Uint8Array(result)]
+    .map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+export async function onRequestPost({request, env}) {
+  if (!checkOrigin(request)) return jsonError('Invalid request origin.', 403);
+
+  let stage = 'configuration';
+
+  try {
+    if (!env.DB || !env.ADMIN_EMAIL || !env.ADMIN_PASSWORD_HASH ||
+        !env.ADMIN_PASSWORD_SALT || !env.SESSION_SECRET) {
+      return jsonError('Admin secrets are not configured.', 503);
+    }
+
+    stage = 'ip_hash';
+    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    const ipHash = await hashIP(ip, env.SESSION_SECRET);
+    const now = Math.floor(Date.now() / 1000);
+
+    stage = 'cleanup';
+    await env.DB.prepare(
+      'DELETE FROM login_attempts WHERE attempted_at < ?'
+    ).bind(now - 3600).run();
+
+    stage = 'rate_check';
+    const attempts = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM login_attempts WHERE ip_hash=? AND attempted_at>?'
+    ).bind(ipHash, now - 900).first();
+
+    if ((attempts?.n || 0) >= 8) {
+      return jsonError('Too many attempts. Try again in 15 minutes.', 429);
+    }
+
+    stage = 'request_body';
+    let body;
+    try {
+      body = await readJson(request);
+    } catch {
+      return jsonError('Invalid request.');
+    }
+
+    stage = 'record_attempt';
+    await env.DB.prepare(
+      'INSERT INTO login_attempts(ip_hash,attempted_at) VALUES(?,?)'
+    ).bind(ipHash, now).run();
+
+    stage = 'password_hash';
+    const email = String(body.email || '').toLowerCase().trim();
+    const pass = String(body.password || '');
+    const actual = await hashPassword(pass, env.ADMIN_PASSWORD_SALT);
+
+    if (email !== env.ADMIN_EMAIL.toLowerCase() ||
+        actual !== env.ADMIN_PASSWORD_HASH) {
+      return jsonError('Email or password is incorrect.', 401);
+    }
+
+    stage = 'create_session';
+    const token = await signToken(env, {
+      sub: email,
+      exp: Date.now() + 8 * 60 * 60 * 1000
+    });
+
+    return new Response(JSON.stringify({ok:true}), {
+      headers: {
+        'Content-Type':'application/json',
+        'Set-Cookie':cookieHeader(token, 8 * 60 * 60)
+      }
+    });
+  } catch (error) {
+    console.error('FT_LOGIN_FAILURE:', stage, error?.name || 'UnknownError');
+    return Response.json({
+      error: 'Login service error.',
+      diagnostic: stage
+    }, {status:500});
+  }
 }
