@@ -1,3 +1,4 @@
+import { pbkdf2 } from 'node:crypto';
 import {
   signToken,
   cookieHeader,
@@ -8,31 +9,15 @@ import {
 
 const enc = new TextEncoder();
 
-async function hashPassword(password, salt, setStage = () => {}) {
-  setStage('password_import');
-  const key = await crypto.subtle.importKey(
-    'raw',
-    enc.encode(password),
-    'PBKDF2',
-    false,
-    ['deriveBits']
-  );
-
+function hashPassword(password, salt, setStage = () => {}) {
   setStage('password_derive');
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt: enc.encode(salt),
-      iterations: 210000,
-      hash: 'SHA-256'
-    },
-    key,
-    256
-  );
 
-  return [...new Uint8Array(bits)]
-    .map(x => x.toString(16).padStart(2, '0'))
-    .join('');
+  return new Promise((resolve, reject) => {
+    pbkdf2(password, salt, 210000, 32, 'sha256', (error, derivedKey) => {
+      if (error) return reject(error);
+      resolve(derivedKey.toString('hex'));
+    });
+  });
 }
 
 async function hashIP(ip, secret) {
